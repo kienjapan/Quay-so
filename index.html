@@ -146,7 +146,7 @@
 </div>
 
 <script>
-    // --- CẤU HÌNH SUPABASE ONLINE (Thay thông tin của bạn vào đây) ---
+    // --- CẤU HÌNH SUPABASE ONLINE ---
     const SUPABASE_URL = "https://lawxwalbpxmgzeeuoara.supabase.co"; 
     const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imxhd3h3YWxicHhtZ3plZXVvYXJhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4MDk2ODgsImV4cCI6MjA5NjM4NTY4OH0.DzliXe_co1vy_haR9uGxKabIGCIr5_qfi9Jt1HOGSwo";
     const supabase = Supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
@@ -214,6 +214,13 @@
 
     function checkDeviceLockStatus(hasSpunFromServer) {
         const btnSpin = document.getElementById("btn_spin");
+        if (globalState.finished) {
+            btnSpin.disabled = true;
+            btnSpin.innerText = "PHIÊN ĐÃ KẾT THÚC";
+            btnSpin.className = "btn btn-secondary btn-lg w-100 py-3 fw-bold";
+            return;
+        }
+
         if (hasSpunFromServer === true || local_has_spun) {
             btnSpin.disabled = true;
             btnSpin.innerText = "BẠN ĐÃ QUAY SỐ RỒI";
@@ -320,6 +327,13 @@
         checkDeviceLockStatus(am_i_in_list);
     }
 
+    // Thêm hàm lắng nghe sự kiện gõ chữ để tự động khóa/mở nút quay theo thời gian thực
+    document.getElementById("user_name").addEventListener("input", function() {
+        let name = this.value.trim();
+        let am_i_in_list = globalState.live_results.some(item => item.name === name && name !== "");
+        checkDeviceLockStatus(am_i_in_list);
+    });
+
     // Logic nút Lưu cấu hình của Admin
     if (document.getElementById("btn_save")) {
         document.getElementById("btn_save").addEventListener("click", async function() {
@@ -335,6 +349,8 @@
             globalState.live_results = [];
             globalState.final_results = [];
             globalState.finished = false;
+            globalState.spinning_name = null;
+            globalState.current_spin_result = 0;
             
             await saveStateToCloud();
             alert("Lưu và tạo phiên bốc thăm mới thành công!");
@@ -366,7 +382,7 @@
         });
     }
 
-    // Logic Bấm Quay Số của thành viên (Xử lý trực tiếp client-side đồng bộ lên Cloud)
+    // Logic Bấm Quay Số của thành viên (Đã xử lý triệt để lỗi ghi đè dữ liệu ngầm)
     document.getElementById("btn_spin").addEventListener("click", async function() {
         if(is_local_animating || globalState.finished) return;
         
@@ -403,36 +419,39 @@
         });
         await saveStateToCloud();
 
-        // Giả lập hiệu ứng chạy 2 giây đồng bộ giống code gốc
+        // Đợi 2 giây chạy hiệu ứng, sau đó kéo dữ liệu mới nhất trên mây về cập nhật để tránh xung đột
         setTimeout(async () => {
-            let targetUser = globalState.live_results.find(item => item.name === name);
+            let { data } = await supabase.from('draw_sessions').select('state').eq('id', SESSION_ID).single();
+            let freshState = data ? data.state : globalState;
+
+            let targetUser = freshState.live_results.find(item => item.name === name);
             if (targetUser) targetUser.number = randomNumber;
             
-            globalState.spinning_name = null;
-            globalState.current_count += 1;
+            freshState.spinning_name = null;
+            freshState.current_count += 1;
 
             // Nếu đủ người thì tính toán bảng phân công chính thức ngay lập tức
-            if (globalState.current_count >= globalState.max_count) {
-                globalState.finished = true;
+            if (freshState.current_count >= freshState.max_count) {
+                freshState.finished = true;
                 
-                // Sao chép danh sách để sắp xếp dựa trên cấu hình xếp hạng
-                let sortedResults = [...globalState.live_results];
-                if (globalState.sort_mode === "asc") {
+                let sortedResults = [...freshState.live_results];
+                if (freshState.sort_mode === "asc") {
                     sortedResults.sort((a, b) => a.number - b.number);
                 } else {
                     sortedResults.sort((a, b) => b.number - a.number);
                 }
 
-                globalState.final_results = sortedResults.map((item, index) => {
+                freshState.final_results = sortedResults.map((item, index) => {
                     return {
                         rank: index + 1,
                         name: item.name,
                         number: item.number,
-                        task: globalState.tasks[index] || "Nhiệm vụ phát sinh"
+                        task: freshState.tasks[index] || "Nhiệm vụ phát sinh"
                     };
                 });
             }
 
+            globalState = freshState;
             await saveStateToCloud();
         }, 2000);
     });
